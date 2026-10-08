@@ -1,6 +1,7 @@
 export const SAVE_KEY = "ARISE_SAVE_V10";
 export const LEGACY_SAVE_KEY = "ARISE_SAVE_V2";
 export const SAVE_VERSION = 10;
+export const STUDY_CAP_MINUTES = 720;
 
 export const CORE_QUESTS = [
   { id: "nj", name: "NJ", detail: "NAAM JAP", xp: 100, icon: "◉" },
@@ -54,7 +55,9 @@ export const ACHIEVEMENTS = [
   { id: "rank-s-awakening", icon: "S", name: "S-RANK AWAKENING", description: "Ascend to S-Rank.", rank: "S", test: s => s.player.level >= 75 },
   { id: "rank-ss-awakening", icon: "SS", name: "SS-RANK AWAKENING", description: "Ascend to SS-Rank.", rank: "SS", test: s => s.player.level >= 150 },
   { id: "rank-sss-awakening", icon: "✦", name: "SSS-RANK AWAKENING", description: "Ascend to SSS-Rank.", rank: "SSS", test: s => s.player.level >= 300 },
-  { id: "rank-x-awakening", icon: "X", name: "X-RANK AWAKENING", description: "Reach the pinnacle of X-Rank.", rank: "X", test: s => s.player.level >= 999 }
+  { id: "rank-x-awakening", icon: "X", name: "X-RANK AWAKENING", description: "Reach the pinnacle of X-Rank.", rank: "X", test: s => s.player.level >= 999 },
+  { id: "two-hundred-fifty-hours-study", icon: "◷", name: "STUDY CENTURION", description: "Log 250 hours of legitimate study.", test: s => getStats(s).totalStudyMinutes >= 15000 },
+  { id: "five-hundred-hours-study", icon: "◷", name: "STUDY MASTER", description: "Log 500 hours of legitimate study.", test: s => getStats(s).totalStudyMinutes >= 30000 }
 ].map((achievement, index) => ({
   ...achievement,
   rewardXp: achievement.rank ? 250 + index * 25 : 50 + Math.floor(index / 8) * 25
@@ -93,6 +96,10 @@ export function isDateKey(value) {
 
 export function xpRequired(level) {
   return 500 + ((Math.max(1, level) - 1) * 250);
+}
+
+export function levelUpReward(level) {
+  return Math.round(100 * (1.05 ** (Math.max(1, Math.trunc(level)) - 1)));
 }
 
 export function rankForLevel(level) {
@@ -138,7 +145,7 @@ export function createSave(date = localDate()) {
     achievements: {},
     bestStreak: 0,
     logs: [],
-    antiCheat: { studyCapMinutes: 480, firstViolationPenalty: -5000 },
+    antiCheat: { studyCapMinutes: STUDY_CAP_MINUTES, firstViolationPenalty: -5000 },
     settings: { playerName: "", nameConfigured: false },
     events: { winterArcStartDate: date }
   };
@@ -165,9 +172,9 @@ function cleanDay(day, date, library) {
   const quests = source.quests && typeof source.quests === "object" ? source.quests : {};
   const customSource = Array.isArray(source.customQuests) ? source.customQuests : library;
   const customQuests = customSource.map((item, index) => cleanCustomQuest(item, `${date}-custom-${index}`)).filter(Boolean);
-  const studyMinutes = Number.isInteger(source.studyMinutes) ? Math.max(0, Math.min(480, source.studyMinutes)) : 0;
+  const studyMinutes = Number.isInteger(source.studyMinutes) ? Math.max(0, Math.min(STUDY_CAP_MINUTES, source.studyMinutes)) : 0;
   const studyEntries = Array.isArray(source.studyEntries) ? source.studyEntries.slice(-200).map(entry => ({
-    minutes: Number.isInteger(entry?.minutes) ? Math.max(1, Math.min(480, entry.minutes)) : 0,
+    minutes: Number.isInteger(entry?.minutes) ? Math.max(1, Math.min(STUDY_CAP_MINUTES, entry.minutes)) : 0,
     xp: Number.isInteger(entry?.xp) ? entry.xp : 0,
     at: typeof entry?.at === "string" ? entry.at.slice(0, 40) : ""
   })).filter(entry => entry.minutes > 0) : [];
@@ -272,7 +279,7 @@ export function normalizeSave(raw, today = localDate()) {
       at: typeof log?.at === "string" ? log.at.slice(0, 40) : "",
       date: isDateKey(log?.date) ? log.date : today
     })).filter(log => log.text) : [],
-    antiCheat: { studyCapMinutes: 480, firstViolationPenalty: -5000 },
+    antiCheat: { studyCapMinutes: STUDY_CAP_MINUTES, firstViolationPenalty: -5000 },
     settings: {
       playerName: configuredName || playerName,
       nameConfigured: raw.settings?.nameConfigured === true || Boolean(playerName && playerName.toUpperCase() !== "AWAKENED")
@@ -393,6 +400,26 @@ export function applyXp(save, amount) {
   save.player.xpIntoLevel = derived.xpIntoLevel;
   const after = { level: derived.level, rank: rankForLevel(derived.level) };
   return { before, after, leveledUp: after.level > before.level, rankedUp: after.rank !== before.rank && rankOrder(after.rank) > rankOrder(before.rank) };
+}
+
+export function applyXpWithLevelRewards(save, amount) {
+  const change = applyXp(save, amount);
+  let levelRewardXp = 0;
+  if (amount > 0) {
+    // Only levels crossed by the original action earn bonuses, preventing bonus XP from recursively rewarding itself.
+    for (let level = change.before.level; level < change.after.level; level += 1) {
+      levelRewardXp += levelUpReward(level);
+    }
+    if (levelRewardXp > 0) applyXp(save, levelRewardXp);
+  }
+  const after = { level: save.player.level, rank: rankForLevel(save.player.level) };
+  return {
+    ...change,
+    after,
+    leveledUp: after.level > change.before.level,
+    rankedUp: after.rank !== change.before.rank && rankOrder(after.rank) > rankOrder(change.before.rank),
+    levelRewardXp
+  };
 }
 
 function rankOrder(rank) {

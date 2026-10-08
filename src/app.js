@@ -3,10 +3,11 @@ import {
   CORE_QUESTS,
   EVENT_DEFINITIONS,
   SAVE_KEY,
+  STUDY_CAP_MINUTES,
   TIMED_EVENTS,
   addDays,
   addSystemLog,
-  applyXp,
+  applyXpWithLevelRewards,
   customStudyXp,
   dayHasProgress,
   dayStatus,
@@ -39,6 +40,7 @@ const SCREEN_META = {
   system: ["SYSTEM", "CORE CONFIGURATION"],
   events: ["EVENTS", "LIVE OPERATIONS"]
 };
+const RANK_ORDER = ["E", "D", "C", "B", "A", "S", "SS", "SSS", "X"];
 
 const root = document.getElementById("appShell");
 const host = document.getElementById("screenHost");
@@ -52,7 +54,7 @@ let activeScreen = "home";
 let calendarCursor = new Date();
 let selectedCalendarDate = localDate();
 let screenTransitionTimer = 0;
-const focusTimer = { minutes: 25, remainingSeconds: 25 * 60, endsAt: 0, intervalId: 0, running: false };
+const focusTimer = { mode: "timer", minutes: 25, remainingSeconds: 25 * 60, elapsedSeconds: 0, startedAt: 0, intervalId: 0, running: false };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
 const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector)];
@@ -112,6 +114,7 @@ function meter(label, value, max, className = "") {
 
 function updateGlobalHeader() {
   const rank = rankForLevel(state.player.level);
+  document.documentElement.dataset.rank = rank;
   $("#topDate").textContent = new Intl.DateTimeFormat("en-US", { month: "short", day: "2-digit", year: "numeric" }).format(new Date());
   $("#topRank").textContent = rank;
   document.title = `ARISE SYSTEM V10 — ${SCREEN_META[activeScreen][0]}`;
@@ -189,62 +192,80 @@ function showToast(type, title, detail = "", strong = false) {
   $(".toast-close", toast).addEventListener("click", () => { clearTimeout(timer); remove(); });
 }
 
+function showRankAscension(fromRank, toRank) {
+  if (!fromRank || !toRank || fromRank === toRank) return;
+  document.body.classList.add("rank-flash");
+  modalRoot.innerHTML = `<div class="rank-awakening-backdrop"><section class="rank-awakening hud-frame" data-rank="${escapeHTML(toRank)}" role="dialog" aria-modal="true" aria-labelledby="rankAwakeningTitle"><span class="rank-awakening-signal">ARISE CORE // TRANSCENDENCE EVENT</span><div class="rank-awakening-rune" aria-hidden="true">${escapeHTML(toRank)}</div><span class="rank-awakening-change">${escapeHTML(fromRank)} <i>→</i> ${escapeHTML(toRank)}</span><h2 id="rankAwakeningTitle">TRANSCENDENCE<br><em>COMPLETE</em></h2><p>YOU ARE NOW <strong>${escapeHTML(toRank)}-RANK</strong></p><button class="action-button" type="button" data-action="dismiss-rank">CONTINUE ASCENSION <span>↗</span></button></section></div>`;
+  $("button[data-action='dismiss-rank']", modalRoot).focus();
+}
+
+function rankOrder(rank) {
+  return RANK_ORDER.indexOf(rank);
+}
+
+function dismissRankAscension() {
+  if (!$(".rank-awakening-backdrop", modalRoot)) return;
+  modalRoot.replaceChildren();
+  document.body.classList.remove("rank-flash");
+}
+
 function log(text, type = "info") {
   addSystemLog(state, text, type);
 }
 
-function processAchievementUnlocks(notify = true) {
-  let rankChanged = false;
+function processAchievementUnlocks(notify = true, startingRank = rankForLevel(state.player.level)) {
   while (true) {
     const earned = evaluateAchievements(state);
     if (!earned.length) break;
     for (const achievement of earned) {
       const reward = achievement.rewardXp;
-      const change = applyXp(state, reward);
+      const change = applyXpWithLevelRewards(state, reward);
       log(`ACHIEVEMENT UNLOCKED // ${achievement.name} // +${fmtNumber(reward)} XP`, "achievement");
       if (notify) {
         showToast("achievement", "ACHIEVEMENT REWARD", `${achievement.name} · +${fmtNumber(reward)} XP`, true);
       }
+      if (change.levelRewardXp > 0) {
+        log(`LEVEL REWARD // +${fmtNumber(change.levelRewardXp)} XP`, "level");
+      }
       if (change.leveledUp) {
         log(`LEVEL UP // LEVEL ${change.after.level}`, "level");
-        if (notify) showToast("level", "LEVEL UP", `LEVEL ${change.after.level} · ACHIEVEMENT REWARD`, true);
+        if (notify) showToast("level", "LEVEL UP", `LEVEL ${change.after.level} · +${fmtNumber(change.levelRewardXp)} XP REWARD`, true);
       }
       if (change.rankedUp) {
-        rankChanged = true;
         log(`RANK UP // ${change.after.rank}-RANK`, "rank");
-        if (notify) showToast("rank", "RANK UP", `${change.after.rank}-RANK`, true);
       }
     }
   }
-  if (rankChanged) {
-    document.body.classList.add("rank-flash");
-    setTimeout(() => document.body.classList.remove("rank-flash"), 2300);
+  const endingRank = rankForLevel(state.player.level);
+  if (notify && rankOrder(endingRank) > rankOrder(startingRank)) {
+    document.documentElement.dataset.rank = endingRank;
+    showRankAscension(startingRank, endingRank);
   }
 }
 
 function award(amount, reason, logType = "success") {
   const timedEvent = amount > 0 ? timedEventAt() : null;
   const awardedAmount = eventAdjustedXp(amount, timedEvent);
-  const change = applyXp(state, awardedAmount);
+  const change = applyXpWithLevelRewards(state, awardedAmount);
   const amountText = `${awardedAmount >= 0 ? "+" : ""}${fmtNumber(awardedAmount)} XP`;
   const eventText = timedEvent ? ` // ${timedEvent.name} ${timedEvent.multiplier > 1 ? "+" : ""}${Math.round((timedEvent.multiplier - 1) * 100)}%` : "";
   log(`${reason} // ${amountText}${eventText}`, awardedAmount < 0 ? "error" : logType);
   if (awardedAmount > 0) showToast("success", `+${fmtNumber(awardedAmount)} XP`, timedEvent ? `${reason} · ${timedEvent.name}` : reason);
   if (awardedAmount < 0) showToast("error", `${fmtNumber(awardedAmount)} XP`, reason, true);
+  if (change.levelRewardXp > 0) {
+    log(`LEVEL REWARD // +${fmtNumber(change.levelRewardXp)} XP`, "level");
+  }
   if (change.leveledUp) {
     log(`LEVEL UP // LEVEL ${change.after.level}`, "level");
-    showToast("level", "LEVEL UP", `LEVEL ${change.after.level}`, true);
+    showToast("level", "LEVEL UP", `LEVEL ${change.after.level} · +${fmtNumber(change.levelRewardXp)} XP REWARD`, true);
     document.body.classList.add("level-flash");
     setTimeout(() => document.body.classList.remove("level-flash"), 1700);
   }
   if (change.rankedUp) {
     log(`RANK UP // ${change.after.rank}-RANK`, "rank");
-    showToast("rank", "RANK UP", `${change.after.rank}-RANK`, true);
-    document.body.classList.add("rank-flash");
-    setTimeout(() => document.body.classList.remove("rank-flash"), 2300);
   }
   updateBestStreak(state);
-  processAchievementUnlocks();
+  processAchievementUnlocks(true, change.before.rank);
   persist();
   renderActiveScreen();
 }
@@ -278,6 +299,14 @@ function flagStudyViolation(hoursValue, minutesValue, reason, totalAttempt = nul
     penaltyApplied: true,
     legacy: false
   });
+  if (focusTimer.running) {
+    const seconds = currentFocusSeconds();
+    if (focusTimer.mode === "timer") focusTimer.remainingSeconds = seconds;
+    else focusTimer.elapsedSeconds = seconds;
+    focusTimer.running = false;
+    clearInterval(focusTimer.intervalId);
+    focusTimer.intervalId = 0;
+  }
   log(`INVALID SYSTEM ENTRY // ${reason}`, "error");
   log("SYSTEM LESSON // EARN XP. DO NOT FARM XP. DISCIPLINE CANNOT BE FAKED.", "warning");
   award(-5000, "STUDY CAP VIOLATION // SYSTEM LESSON", "error");
@@ -305,8 +334,8 @@ function submitStudy(form) {
     return;
   }
   const attemptedTotal = day.studyMinutes + totalMinutes;
-  if (!Number.isSafeInteger(totalMinutes) || attemptedTotal > state.antiCheat.studyCapMinutes) {
-    flagStudyViolation(hours, minutes, "DAILY STUDY CAP EXCEEDED", attemptedTotal);
+  if (!Number.isSafeInteger(totalMinutes) || attemptedTotal > STUDY_CAP_MINUTES) {
+    flagStudyViolation(hours, minutes, `DAILY STUDY CAP EXCEEDED (${STUDY_CAP_MINUTES / 60} HOURS)`, attemptedTotal);
     return;
   }
   const oldTotal = day.studyMinutes;
@@ -328,47 +357,95 @@ function focusTimeText(seconds) {
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+function currentFocusSeconds() {
+  if (!focusTimer.running) return focusTimer.mode === "timer" ? focusTimer.remainingSeconds : focusTimer.elapsedSeconds;
+  const elapsed = Math.max(0, Math.floor((Date.now() - focusTimer.startedAt) / 1000));
+  return focusTimer.mode === "timer" ? Math.max(0, focusTimer.remainingSeconds - elapsed) : focusTimer.elapsedSeconds + elapsed;
+}
+
 function updateFocusDisplay() {
-  if (focusTimer.running) focusTimer.remainingSeconds = Math.max(0, Math.ceil((focusTimer.endsAt - Date.now()) / 1000));
-  if (focusTimer.running && focusTimer.remainingSeconds === 0) {
+  let seconds = currentFocusSeconds();
+  if (focusTimer.mode === "stopwatch" && focusTimer.running) {
+    const availableSeconds = Math.max(0, state.antiCheat.studyCapMinutes - todayRecord().studyMinutes) * 60;
+    if (seconds >= availableSeconds) {
+      seconds = availableSeconds;
+      focusTimer.elapsedSeconds = seconds;
+      focusTimer.running = false;
+      clearInterval(focusTimer.intervalId);
+      focusTimer.intervalId = 0;
+      showToast("info", "DAILY STUDY CAP REACHED", "The stopwatch paused at today's remaining study limit.", true);
+    }
+  }
+  if (focusTimer.mode === "timer" && focusTimer.running && seconds === 0) {
     clearInterval(focusTimer.intervalId);
     focusTimer.intervalId = 0;
+    focusTimer.remainingSeconds = 0;
     focusTimer.running = false;
-    showToast("success", "FOCUS SPRINT READY", "Log the completed sprint to record study time and XP.", true);
-    if (activeScreen === "home") renderActiveScreen();
+    showToast("success", "FOCUS TIMER COMPLETE", "Log the completed session to record study time and XP.", true);
+    if (activeScreen === "home" || activeScreen === "quests") renderActiveScreen();
   }
   const clock = $("#focusClock");
   if (!clock) return;
-  const canFit = todayRecord().studyMinutes + focusTimer.minutes <= state.antiCheat.studyCapMinutes;
-  clock.textContent = focusTimeText(focusTimer.remainingSeconds);
-  $("#focusStatus").textContent = focusTimer.running ? "IN SESSION" : focusTimer.remainingSeconds === 0 ? "READY TO LOG" : focusTimer.remainingSeconds === focusTimer.minutes * 60 ? "STANDING BY" : "PAUSED";
-  $("#focusTrack").style.width = `${(1 - focusTimer.remainingSeconds / (focusTimer.minutes * 60)) * 100}%`;
-  $("#focusToggle").textContent = focusTimer.running ? "PAUSE SPRINT" : focusTimer.remainingSeconds === 0 ? "SPRINT COMPLETE" : focusTimer.remainingSeconds === focusTimer.minutes * 60 ? "START SPRINT" : "RESUME SPRINT";
-  $("#focusToggle").disabled = focusTimer.remainingSeconds === 0 || (!canFit && !focusTimer.running);
-  $("#focusLog").disabled = focusTimer.remainingSeconds !== 0 || !canFit || Boolean(todayRecord().cheatAttempts.length);
+  const availableMinutes = Math.max(0, state.antiCheat.studyCapMinutes - todayRecord().studyMinutes);
+  const canFit = focusTimer.mode === "timer" ? focusTimer.minutes <= availableMinutes : Math.floor(seconds / 60) <= availableMinutes;
+  const readyToLog = focusTimer.mode === "timer" ? seconds === 0 : !focusTimer.running && seconds >= 60;
+  const progress = focusTimer.mode === "timer" ? 1 - seconds / (focusTimer.minutes * 60) : (seconds % 60) / 60;
+  const status = focusTimer.running ? "IN SESSION" : readyToLog ? "READY TO LOG" : seconds === 0 || focusTimer.mode === "timer" && seconds === focusTimer.minutes * 60 ? "STANDING BY" : "PAUSED";
+  const toggle = $("#focusToggle");
+  const logButton = $("#focusLog");
+  const consolePanel = $(".focus-console");
+  const signal = $(".focus-signal");
+  clock.textContent = focusTimeText(seconds);
+  clock.setAttribute("aria-label", focusTimer.mode === "timer" ? "Time remaining" : "Study time elapsed");
+  $("#focusStatus").textContent = status;
+  $("#focusTrack").style.width = `${Math.min(100, Math.max(0, progress * 100))}%`;
+  consolePanel.classList.toggle("focus-running", focusTimer.running);
+  signal.innerHTML = `<i></i> ${todayRecord().cheatAttempts.length ? "STUDY LOCK" : focusTimer.running ? "TRANSMITTING" : "READY"}`;
+  toggle.innerHTML = `${focusTimer.running ? "PAUSE SESSION" : readyToLog ? "SESSION READY" : seconds === 0 || focusTimer.mode === "timer" && seconds === focusTimer.minutes * 60 ? "START SESSION" : "RESUME SESSION"}<span>${focusTimer.running ? "Ⅱ" : "▶"}</span>`;
+  toggle.disabled = focusTimer.mode === "timer" && seconds === 0 || focusTimer.mode === "stopwatch" && seconds >= availableMinutes * 60 && !focusTimer.running || Boolean(todayRecord().cheatAttempts.length);
+  logButton.disabled = !readyToLog || !canFit || Boolean(todayRecord().cheatAttempts.length);
+  logButton.innerHTML = `LOG SESSION <span>+${customStudyXp(todayRecord().studyMinutes, todayRecord().studyMinutes + Math.floor(seconds / 60))} XP</span>`;
 }
 
 function renderFocusConsole(locked) {
-  const seconds = focusTimer.running ? Math.max(0, Math.ceil((focusTimer.endsAt - Date.now()) / 1000)) : focusTimer.remainingSeconds;
-  const status = focusTimer.running ? "IN SESSION" : seconds === 0 ? "READY TO LOG" : seconds === focusTimer.minutes * 60 ? "STANDING BY" : "PAUSED";
+  const seconds = currentFocusSeconds();
+  const timerMode = focusTimer.mode === "timer";
+  const status = focusTimer.running ? "IN SESSION" : timerMode && seconds === 0 || !timerMode && seconds >= 60 ? "READY TO LOG" : seconds === 0 || timerMode && seconds === focusTimer.minutes * 60 ? "STANDING BY" : "PAUSED";
   const dayMinutes = todayRecord().studyMinutes;
   const availableMinutes = Math.max(0, state.antiCheat.studyCapMinutes - dayMinutes);
-  const canFit = focusTimer.minutes <= availableMinutes;
-  const xp = canFit ? customStudyXp(dayMinutes, dayMinutes + focusTimer.minutes) : 0;
-  const hint = locked ? "STUDY LOCK ACTIVE UNTIL TOMORROW." : !canFit ? `ONLY ${availableMinutes} MIN REMAIN BELOW TODAY'S STUDY CAP.` : "XP IS RECORDED ONLY AFTER A COMPLETED SPRINT IS LOGGED.";
-  return `<section class="focus-console ${focusTimer.running ? "focus-running" : ""}" aria-label="Focus sprint timer"><div class="focus-console-head"><div><span class="section-code">FOCUS PROTOCOL // ${focusTimer.minutes} MIN</span><strong id="focusStatus">${status}</strong></div><span class="focus-signal"><i></i> ${locked ? "STUDY LOCK" : focusTimer.running ? "TRANSMITTING" : "READY"}</span></div><div class="focus-controls"><div class="focus-presets" role="group" aria-label="Sprint duration"><button type="button" data-action="focus-duration" data-minutes="25" aria-pressed="${focusTimer.minutes === 25}" ${locked || availableMinutes < 25 ? "disabled" : ""}>25 MIN</button><button type="button" data-action="focus-duration" data-minutes="50" aria-pressed="${focusTimer.minutes === 50}" ${locked || availableMinutes < 50 ? "disabled" : ""}>50 MIN</button></div><strong id="focusClock" class="focus-clock" role="timer" aria-label="Time remaining">${focusTimeText(seconds)}</strong><div class="focus-track"><i id="focusTrack" style="width:${(1 - seconds / (focusTimer.minutes * 60)) * 100}%"></i></div><div class="focus-actions"><button id="focusToggle" class="action-button focus-toggle" type="button" data-action="focus-toggle" ${locked || seconds === 0 || (!canFit && !focusTimer.running) ? "disabled" : ""}>${focusTimer.running ? "PAUSE SPRINT" : seconds === focusTimer.minutes * 60 ? "START SPRINT" : seconds === 0 ? "SPRINT COMPLETE" : "RESUME SPRINT"}<span>${focusTimer.running ? "Ⅱ" : "▶"}</span></button><button class="square-button focus-reset" type="button" data-action="focus-reset" aria-label="Reset focus sprint" title="Reset sprint" ${locked ? "disabled" : ""}>↺</button><button id="focusLog" class="action-button focus-log" type="button" data-action="focus-log" ${locked || seconds !== 0 || !canFit ? "disabled" : ""}>LOG SPRINT <span>+${xp} XP</span></button></div></div><p class="focus-hint">${hint}</p></section>`;
+  const sessionMinutes = timerMode ? focusTimer.minutes : Math.floor(seconds / 60);
+  const canFit = timerMode ? focusTimer.minutes <= availableMinutes : sessionMinutes <= availableMinutes;
+  const xp = canFit ? customStudyXp(dayMinutes, dayMinutes + sessionMinutes) : 0;
+  const readyToLog = timerMode ? seconds === 0 : !focusTimer.running && seconds >= 60;
+  const hint = locked ? "STUDY LOCK ACTIVE UNTIL TOMORROW." : !availableMinutes ? `TODAY'S ${STUDY_CAP_MINUTES / 60}H STUDY CAP IS REACHED.` : timerMode ? `CHOOSE A PRESET OR SET ${availableMinutes} MIN MAX. EARN 50 XP PER FULL STUDY HOUR.` : "STOP THE WATCH AND LOG COMPLETED MINUTES. EARN 50 XP PER FULL STUDY HOUR.";
+  const progress = timerMode ? 1 - seconds / (focusTimer.minutes * 60) : (seconds % 60) / 60;
+  const name = timerMode ? `${focusTimer.minutes} MIN TIMER` : "STOPWATCH";
+  const customMaximum = Math.min(STUDY_CAP_MINUTES, availableMinutes);
+  return `<section class="focus-console ${focusTimer.running ? "focus-running" : ""}" aria-label="Focus timer and stopwatch"><div class="focus-console-head"><div><span class="section-code">FOCUS PROTOCOL // ${name}</span><strong id="focusStatus">${status}</strong></div><span class="focus-signal"><i></i> ${locked ? "STUDY LOCK" : focusTimer.running ? "TRANSMITTING" : "READY"}</span></div><div class="focus-mode-switch" role="group" aria-label="Focus clock mode"><button type="button" data-action="focus-mode" data-mode="timer" aria-pressed="${timerMode}" ${locked || focusTimer.running ? "disabled" : ""}>COUNTDOWN TIMER</button><button type="button" data-action="focus-mode" data-mode="stopwatch" aria-pressed="${!timerMode}" ${locked || focusTimer.running ? "disabled" : ""}>STOPWATCH</button></div>${timerMode ? `<div class="focus-duration-row"><div class="focus-presets" role="group" aria-label="Timer presets"><button type="button" data-action="focus-duration" data-minutes="25" aria-pressed="${focusTimer.minutes === 25}" ${locked || focusTimer.running || availableMinutes < 25 ? "disabled" : ""}>25 MIN</button><button type="button" data-action="focus-duration" data-minutes="50" aria-pressed="${focusTimer.minutes === 50}" ${locked || focusTimer.running || availableMinutes < 50 ? "disabled" : ""}>50 MIN</button></div><form id="focusDurationForm" class="focus-duration-form"><label class="field"><span>CUSTOM MIN</span><input name="minutes" type="number" inputmode="numeric" min="1" max="${customMaximum}" step="1" value="${focusTimer.minutes}" aria-label="Custom timer duration in minutes" ${locked || focusTimer.running || availableMinutes < 1 ? "disabled" : ""}></label><button class="action-button" type="submit" ${locked || focusTimer.running || availableMinutes < 1 ? "disabled" : ""}>SET</button></form></div>` : ""}<div class="focus-controls"><strong id="focusClock" class="focus-clock" role="timer" aria-label="${timerMode ? "Time remaining" : "Study time elapsed"}">${focusTimeText(seconds)}</strong><div class="focus-track"><i id="focusTrack" style="width:${Math.min(100, Math.max(0, progress * 100))}%"></i></div><div class="focus-actions"><button id="focusToggle" class="action-button focus-toggle" type="button" data-action="focus-toggle" ${locked || timerMode && seconds === 0 || !canFit && !focusTimer.running || !timerMode && seconds >= availableMinutes * 60 && !focusTimer.running ? "disabled" : ""}>${focusTimer.running ? "PAUSE SESSION" : readyToLog ? "SESSION READY" : seconds === 0 || timerMode && seconds === focusTimer.minutes * 60 ? "START SESSION" : "RESUME SESSION"}<span>${focusTimer.running ? "Ⅱ" : "▶"}</span></button><button class="square-button focus-reset" type="button" data-action="focus-reset" aria-label="Reset focus session" title="Reset session" ${locked ? "disabled" : ""}>↺</button><button id="focusLog" class="action-button focus-log" type="button" data-action="focus-log" ${locked || !readyToLog || !canFit ? "disabled" : ""}>LOG SESSION <span>+${xp} XP</span></button></div></div><p class="focus-hint">${hint}</p></section>`;
+}
+
+function setFocusMode(mode) {
+  if (!["timer", "stopwatch"].includes(mode) || focusTimer.running) return;
+  focusTimer.mode = mode;
+  resetFocusSprint(focusTimer.minutes);
 }
 
 function toggleFocusSprint() {
   if (focusTimer.running) {
-    focusTimer.remainingSeconds = Math.max(0, Math.ceil((focusTimer.endsAt - Date.now()) / 1000));
+    const seconds = currentFocusSeconds();
+    if (focusTimer.mode === "timer") focusTimer.remainingSeconds = seconds;
+    else focusTimer.elapsedSeconds = seconds;
     focusTimer.running = false;
     clearInterval(focusTimer.intervalId);
     focusTimer.intervalId = 0;
-  } else if (focusTimer.remainingSeconds > 0) {
-    focusTimer.endsAt = Date.now() + focusTimer.remainingSeconds * 1000;
+  } else if (!todayRecord().cheatAttempts.length && (focusTimer.mode === "timer"
+    ? focusTimer.remainingSeconds > 0 && todayRecord().studyMinutes + focusTimer.minutes <= state.antiCheat.studyCapMinutes
+    : todayRecord().studyMinutes < state.antiCheat.studyCapMinutes)) {
+    focusTimer.startedAt = Date.now();
     focusTimer.running = true;
     focusTimer.intervalId = setInterval(updateFocusDisplay, 250);
+  } else if (!todayRecord().cheatAttempts.length) {
+    showToast("warning", "STUDY CAP REACHED", "This session does not fit today's remaining study time.");
   }
   updateFocusDisplay();
 }
@@ -376,15 +453,34 @@ function toggleFocusSprint() {
 function resetFocusSprint(minutes = focusTimer.minutes) {
   clearInterval(focusTimer.intervalId);
   focusTimer.intervalId = 0;
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > STUDY_CAP_MINUTES) {
+    showToast("warning", "INVALID TIMER DURATION", `Choose a whole number from 1 to ${STUDY_CAP_MINUTES} minutes.`);
+    renderActiveScreen();
+    return;
+  }
   focusTimer.minutes = minutes;
   focusTimer.remainingSeconds = minutes * 60;
+  focusTimer.elapsedSeconds = 0;
   focusTimer.running = false;
   renderActiveScreen();
 }
 
+function applyFocusDuration(form) {
+  const rawMinutes = form.elements.minutes.value.trim();
+  const minutes = Number(rawMinutes);
+  const availableMinutes = Math.max(0, state.antiCheat.studyCapMinutes - todayRecord().studyMinutes);
+  if (!/^\d+$/.test(rawMinutes) || !Number.isSafeInteger(minutes) || minutes < 1 || minutes > Math.min(STUDY_CAP_MINUTES, availableMinutes)) {
+    showToast("warning", "INVALID TIMER DURATION", `Choose a whole number from 1 to ${Math.min(STUDY_CAP_MINUTES, availableMinutes)} minutes.`);
+    form.elements.minutes.focus();
+    return;
+  }
+  resetFocusSprint(minutes);
+}
+
 function logFocusSprint() {
-  if (focusTimer.remainingSeconds !== 0 || todayRecord().cheatAttempts.length) return;
-  const minutes = focusTimer.minutes;
+  const seconds = currentFocusSeconds();
+  const minutes = focusTimer.mode === "timer" ? focusTimer.minutes : Math.floor(seconds / 60);
+  if (focusTimer.running || todayRecord().cheatAttempts.length || (focusTimer.mode === "timer" && seconds !== 0) || (focusTimer.mode === "stopwatch" && minutes < 1)) return;
   if (todayRecord().studyMinutes + minutes > state.antiCheat.studyCapMinutes) {
     showToast("warning", "STUDY CAP REACHED", "This completed sprint no longer fits today's remaining study time.");
     return;
@@ -392,6 +488,7 @@ function logFocusSprint() {
   clearInterval(focusTimer.intervalId);
   focusTimer.intervalId = 0;
   focusTimer.remainingSeconds = minutes * 60;
+  focusTimer.elapsedSeconds = 0;
   focusTimer.running = false;
   submitStudy({ elements: { hours: { value: String(Math.floor(minutes / 60)) }, minutes: { value: String(minutes % 60) } } });
 }
@@ -448,6 +545,7 @@ function renderHome() {
   const xpPercent = Math.min(100, state.player.xpIntoLevel / required * 100);
   const done = CORE_QUESTS.filter(quest => day.quests[quest.id]).length + (day.studyMinutes > 0 ? 1 : 0);
   const completionPercent = Math.round(done / 5 * 100);
+  const dailyStudyPercent = Math.min(100, Math.round(day.studyMinutes / STUDY_CAP_MINUTES * 100));
   const recentLogs = state.logs.slice(0, 5);
   const nextQuest = CORE_QUESTS.find(quest => !day.quests[quest.id]);
   const nextActionText = focusTimer.running ? `FOCUS SPRINT ACTIVE // ${focusTimer.minutes} MIN SESSION` : focusTimer.remainingSeconds === 0 ? "FOCUS SPRINT COMPLETE // LOG IT TO SAVE XP." : !day.studyMinutes ? "START A FOCUS SPRINT TO BUILD TODAY'S STUDY RECORD." : nextQuest ? `NEXT UP // VERIFY ${nextQuest.name}` : "CORE LOOP CLEARED // REVIEW YOUR ASCENSION RECORD.";
@@ -456,7 +554,7 @@ function renderHome() {
   const nextAction = `<section class="next-action-bar hud-frame"><div class="next-action-copy"><span class="next-action-mark">↗</span><div><span class="section-code">RECOMMENDED NEXT ACTION</span><strong>${escapeHTML(nextActionText)}</strong></div></div><button class="action-button" data-screen="${nextActionScreen}" type="button">${nextActionLabel}<span>↗</span></button></section>`;
   const hero = `<section class="home-hero hud-frame"><div class="hero-reactor" aria-hidden="true"><i class="reactor-ring reactor-ring-a"></i><i class="reactor-ring reactor-ring-b"></i><i class="reactor-ring reactor-ring-c"></i><i class="reactor-ring reactor-ring-d"></i><span class="reactor-core"></span><b class="reactor-sweep"></b><small>ARISE CORE // ONLINE</small></div><div class="hero-graphic"><div class="emblem-wrap"><i class="emblem-orbit orbit-a"></i><i class="emblem-orbit orbit-b"></i><i class="emblem-orbit orbit-c"></i><div class="emblem-core"><span>A</span></div><div class="emblem-level">LVL ${state.player.level}</div></div><div class="hero-player"><span class="section-code">PLAYER // AWAKENED</span><h2>THE SYSTEM<br><em>RECOGNIZES YOU.</em></h2><div class="hero-rank">CURRENT RANK <strong>${rankForLevel(state.player.level)}-RANK</strong></div></div><div class="hero-coordinate"><span>PLAYER</span><strong>001</strong><span>INSTANCE: LOCAL</span></div></div><div class="hero-xp"><div class="xp-copy"><span>EXPERIENCE CORE</span><strong>${fmtNumber(state.player.xpIntoLevel)} <i>/ ${fmtNumber(required)} XP</i></strong></div><div class="xp-track"><i style="width:${xpPercent}%"></i><b style="left:${xpPercent}%"></b></div><div class="xp-foot"><span>LEVEL ${state.player.level}</span><span>${Math.round(xpPercent)}% TO NEXT LEVEL</span><span>LEVEL ${state.player.level + 1}</span></div></div><div class="hero-stats"><div><span>CURRENT STREAK</span><strong>${stats.currentStreak}<small> DAYS</small></strong></div><div><span>BEST STREAK</span><strong>${stats.bestStreak}<small> DAYS</small></strong></div><div><span>TODAY XP</span><strong class="accent-number">${fmtNumber(day.xpDelta)}<small> XP</small></strong></div><div><span>OBJECTIVES</span><strong>${done}<small> / 5</small></strong></div></div></section>`;
   const briefing = panel("CORE TRANSMISSION // 01", "SYSTEM BRIEFING", `<div class="briefing-copy"><span class="briefing-quote">“</span><div><p>Today's objective: complete your daily quests and maintain your momentum.</p><span>THE SYSTEM SEES THE GRIND.</span></div></div><div class="briefing-footer"><span>DAILY DIRECTIVE</span><strong>${fmtDate(localDate(), { weekday: "long", month: "long", day: "numeric" }).toUpperCase()}</strong></div>`, "<span class='signal-tag'><i></i> LIVE</span>", "briefing-panel");
-  const daily = panel("DAILY OBJECTIVE MATRIX", "DAILY STATUS", `<div class="daily-status-top"><div class="completion-ring" style="--progress:${completionPercent}%"><div><strong>${completionPercent}<small>%</small></strong><span>SYNC</span></div></div><div class="daily-status-copy"><strong>${done === 5 ? "ALL OBJECTIVES COMPLETE" : "MOMENTUM IN PROGRESS"}</strong><span>${done} OF 5 CORE OBJECTIVES VERIFIED</span></div></div><div class="objective-list"><div class="objective-row ${day.studyMinutes > 0 ? "is-complete" : ""}"><span class="objective-check">${day.studyMinutes > 0 ? "✓" : ""}</span><span>NEET STUDY <small>${fmtStudy(day.studyMinutes)}</small></span><span>${Math.min(100, Math.round(day.studyMinutes / 480 * 100))}%</span></div>${CORE_QUESTS.map(quest => homeQuestRow(quest, day)).join("")}${day.customQuests.map(homeCustomQuestRow).join("")}</div><button class="text-action" data-screen="quests" type="button">OPEN DAILY QUESTS <span>↗</span></button>`, "<span class='date-code'>" + escapeHTML(day.date) + "</span>", "daily-panel");
+  const daily = panel("DAILY OBJECTIVE MATRIX", "DAILY STATUS", `<div class="daily-status-top"><div class="completion-ring" style="--progress:${completionPercent}%"><div><strong>${completionPercent}<small>%</small></strong><span>SYNC</span></div></div><div class="daily-status-copy"><strong>${done === 5 ? "ALL OBJECTIVES COMPLETE" : "MOMENTUM IN PROGRESS"}</strong><span>${done} OF 5 CORE OBJECTIVES VERIFIED</span></div></div><div class="objective-list"><div class="objective-row ${day.studyMinutes > 0 ? "is-complete" : ""}"><span class="objective-check">${day.studyMinutes > 0 ? "✓" : ""}</span><span>NEET STUDY <small>${fmtStudy(day.studyMinutes)}</small></span><span>${dailyStudyPercent}%</span></div>${CORE_QUESTS.map(quest => homeQuestRow(quest, day)).join("")}${day.customQuests.map(homeCustomQuestRow).join("")}</div><button class="text-action" data-screen="quests" type="button">OPEN DAILY QUESTS <span>↗</span></button>`, "<span class='date-code'>" + escapeHTML(day.date) + "</span>", "daily-panel");
   const logRows = recentLogs.length ? recentLogs.map(item => `<div class="log-row log-${escapeHTML(item.type)}"><time>${fmtClock(item.at)}</time><span>${escapeHTML(item.text)}</span><i>›</i></div>`).join("") : `<div class="empty-state compact"><span class="empty-glyph">⌁</span><p>SYSTEM LOG READY.<br>YOUR ACTIONS WILL APPEAR HERE.</p></div>`;
   const systemLog = panel("SYSTEM_LOG // PERSISTENT", "RECENT ACTIVITY", `<div class="log-list">${logRows}</div><button class="text-action" data-screen="system" type="button">OPEN SYSTEM CORE <span>↗</span></button>`, `<span class="log-count">${state.logs.length} ENTRIES</span>`, "home-log-panel");
   const weekXp = stats.weeklyXp;
@@ -485,10 +583,19 @@ function renderQuests() {
   const day = todayRecord();
   const completed = CORE_QUESTS.filter(quest => day.quests[quest.id]).length + (day.studyMinutes > 0 ? 1 : 0);
   const lock = day.cheatAttempts[0];
-  const studyCard = `<section class="study-module hud-frame ${lock ? "study-locked" : ""}"><div class="study-module-top"><div class="study-icon">⌁</div><div><span class="section-code">PERMANENT QUEST // A</span><h2>NEET STUDY</h2><p>FOCUSED STUDY TIME · 50 XP PER HOUR · PROPORTIONAL</p></div><div class="study-cap"><span>DAILY CAP</span><strong>08<span>H</span> 00<span>M</span></strong></div></div><div class="study-meter"><div class="study-meter-top"><span>TODAY'S STUDY</span><strong>${fmtStudy(day.studyMinutes)} <i>/ 08H 00M</i></strong></div><div class="meter-track"><i style="width:${Math.min(100, day.studyMinutes / 480 * 100)}%"></i></div></div>${renderFocusConsole(Boolean(lock))}${lock ? renderStudyViolation(lock) : ""}<form id="studyForm" class="study-form"><label class="field"><span>HOURS</span><input name="hours" inputmode="numeric" type="number" min="0" step="1" placeholder="00" aria-label="Study hours" ${lock ? "disabled" : ""}></label><span class="time-colon">:</span><label class="field"><span>MINUTES</span><input name="minutes" inputmode="numeric" type="number" min="0" max="59" step="1" placeholder="00" aria-label="Study minutes" ${lock ? "disabled" : ""}></label><button class="action-button study-submit" type="submit" ${lock ? "disabled" : ""}>LOG STUDY <span>↗</span></button></form>${lock ? `<div class="locked-message"><span>⛨</span><p>STUDY SUBMISSIONS LOCKED UNTIL NEXT DAY.<br><small>DISCIPLINE CANNOT BE FAKED.</small></p></div>` : `<div class="study-note"><span>THE SYSTEM SEES THE GRIND.</span><span>REPEATED SESSIONS SHARE ONE DAILY XP CURVE</span></div>`}</section>`;
+  const capHours = STUDY_CAP_MINUTES / 60;
+  const capLabel = `${String(capHours).padStart(2, "0")}H 00M`;
+  const studyCard = `<section class="study-module hud-frame ${lock ? "study-locked" : ""}">
+    <div class="study-module-top"><div class="study-icon">⌁</div><div><span class="section-code">PERMANENT QUEST // A</span><h2>NEET STUDY</h2><p>FOCUSED STUDY TIME · 50 XP PER HOUR · PROPORTIONAL</p></div><div class="study-cap"><span>DAILY CAP</span><strong>${capHours}<span>H</span> 00<span>M</span></strong></div></div>
+    <div class="study-meter"><div class="study-meter-top"><span>TODAY'S STUDY</span><strong>${fmtStudy(day.studyMinutes)} <i>/ ${capLabel}</i></strong></div><div class="meter-track"><i style="width:${Math.min(100, day.studyMinutes / STUDY_CAP_MINUTES * 100)}%"></i></div></div>
+    ${renderFocusConsole(Boolean(lock))}${lock ? renderStudyViolation(lock) : ""}
+    <form id="studyForm" class="study-form"><label class="field"><span>HOURS</span><input name="hours" inputmode="numeric" type="number" min="0" step="1" placeholder="00" aria-label="Study hours" ${lock ? "disabled" : ""}></label><span class="time-colon">:</span><label class="field"><span>MINUTES</span><input name="minutes" inputmode="numeric" type="number" min="0" max="59" step="1" placeholder="00" aria-label="Study minutes" ${lock ? "disabled" : ""}></label><button class="action-button study-submit" type="submit" ${lock ? "disabled" : ""}>LOG STUDY <span>↗</span></button></form>
+    ${lock ? `<div class="locked-message"><span>⛨</span><p>STUDY SUBMISSIONS LOCKED UNTIL NEXT DAY.<br><small>DISCIPLINE CANNOT BE FAKED.</small></p></div>` : `<div class="study-note"><span>THE SYSTEM SEES THE GRIND.</span><span>REPEATED SESSIONS SHARE ONE DAILY XP CURVE</span></div>`}
+  </section>`;
   const custom = day.customQuests.length ? day.customQuests.map(renderCustomQuest).join("") : `<div class="empty-state compact"><span class="empty-glyph">◈</span><p>NO CUSTOM QUESTS IN THE DAILY QUEUE.<br>ADD AN OBJECTIVE TO BEGIN.</p></div>`;
   const customPanel = panel("PLAYER GENERATED // DAILY QUEUE", "CUSTOM QUESTS", `<form id="customQuestForm" class="custom-create"><label class="field quest-name-field"><span>TASK NAME</span><input name="taskName" type="text" maxlength="60" placeholder="E.G. READ BIOLOGY NCERT" autocomplete="off" required></label><label class="field reward-field"><span>XP REWARD</span><input name="taskXp" type="number" min="1" max="10000" step="1" placeholder="250" required></label><button class="action-button" type="submit">ADD CUSTOM QUEST <span>＋</span></button></form><p class="form-hint">1–10,000 XP <i>///</i> QUESTS RETURN TO THE DAILY QUEUE EACH DAY</p><div class="custom-quest-list">${custom}</div>`, `<span class="date-code">${escapeHTML(day.date)}</span>`, "custom-panel");
-  host.innerHTML = `<div class="screen-view screen-enter"><div class="screen-intro"><div><span class="section-code">QUEST MATRIX // DAILY</span><p>COMPLETE YOUR OBJECTIVES. THE SYSTEM WILL RECORD EVERY VERIFIED ACTION.</p></div><div class="objective-counter"><strong>${completed}<i>/05</i></strong><span>VERIFIED</span></div></div><div class="quests-layout"><section class="quest-column"><div class="column-heading"><div><span class="section-code">PERMANENT QUESTS // 01—05</span><h2>DAILY OBJECTIVES</h2></div><span class="date-code">${escapeHTML(day.date)}</span></div>${studyCard}${CORE_QUESTS.map(quest => renderPermanentQuest(quest, day)).join("")}</section><aside class="quest-aside"><div class="discipline-panel hud-frame"><span class="section-code">SYSTEM DIRECTIVE</span><div class="directive-mark">✦</div><h3>CONSISTENCY<br>IS YOUR<br><em>POWER.</em></h3><p>Earn XP through honest effort. Every real session moves your profile forward.</p><div class="directive-rule"></div><span class="directive-tag">HONEST PROGRESS &gt; FAKE LEVELS</span></div><div class="quest-aside-stat"><span>CORE QUEST XP</span><strong>+400 <i>XP / DAY</i></strong></div><div class="quest-aside-stat"><span>STUDY XP CAP</span><strong>+400 <i>XP / DAY</i></strong></div></aside></div>${customPanel}</div>`;
+  const aside = `<aside class="quest-aside"><div class="discipline-panel hud-frame"><span class="section-code">SYSTEM DIRECTIVE</span><div class="directive-mark">✦</div><h3>CONSISTENCY<br>IS YOUR<br><em>POWER.</em></h3><p>Earn XP through honest effort. Every real session moves your profile forward.</p><div class="directive-rule"></div><span class="directive-tag">HONEST PROGRESS &gt; FAKE LEVELS</span></div><div class="quest-aside-stat"><span>CORE QUEST XP</span><strong>+400 <i>XP / DAY</i></strong></div><div class="quest-aside-stat"><span>STUDY XP CAP</span><strong>+${fmtNumber(customStudyXp(0, STUDY_CAP_MINUTES))} <i>XP / DAY</i></strong></div></aside>`;
+  host.innerHTML = `<div class="screen-view screen-enter"><div class="screen-intro"><div><span class="section-code">QUEST MATRIX // DAILY</span><p>COMPLETE YOUR OBJECTIVES. THE SYSTEM WILL RECORD EVERY VERIFIED ACTION.</p></div><div class="objective-counter"><strong>${completed}<i>/05</i></strong><span>VERIFIED</span></div></div><div class="quests-layout"><section class="quest-column"><div class="column-heading"><div><span class="section-code">PERMANENT QUESTS // 01—05</span><h2>DAILY OBJECTIVES</h2></div><span class="date-code">${escapeHTML(day.date)}</span></div>${studyCard}${CORE_QUESTS.map(quest => renderPermanentQuest(quest, day)).join("")}</section>${aside}</div>${customPanel}</div>`;
 }
 
 function renderBarChart(items, { labelKey = "label", valueKey = "value", maxValue, empty = "NO ACTIVITY RECORDED" } = {}) {
@@ -526,6 +633,22 @@ function renderLineChart(items) {
 function renderProgress() {
   const stats = getStats(state);
   const today = localDate();
+  const todayRecordForComparison = state.history[today] || { xpDelta: 0, studyMinutes: 0 };
+  const yesterdayRecord = state.history[addDays(today, -1)];
+  const previousWeek = Array.from({ length: 7 }, (_, index) => state.history[addDays(today, index - 7)]);
+  const sevenDayAverageXp = previousWeek.reduce((total, day) => total + (day?.xpDelta || 0), 0) / 7;
+  const sevenDayAverageStudy = previousWeek.reduce((total, day) => total + (day?.studyMinutes || 0), 0) / 7;
+  const comparisonPanel = panel(
+    "DAILY COMPARISON // LIVE",
+    "TODAY VS RECENT DAYS",
+    `<div class="comparison-table" role="table" aria-label="Today's XP and study compared with yesterday and the previous seven-day average">
+      <div class="comparison-row comparison-heading" role="row"><span role="columnheader">ACTIVITY</span><span role="columnheader">TODAY</span><span role="columnheader">YESTERDAY</span><span role="columnheader">7-DAY AVG</span></div>
+      <div class="comparison-row" role="row"><strong role="rowheader">XP EARNED</strong><span>${fmtNumber(todayRecordForComparison.xpDelta)}</span><span>${fmtNumber(yesterdayRecord?.xpDelta || 0)}</span><span>${fmtNumber(Math.round(sevenDayAverageXp))}</span></div>
+      <div class="comparison-row" role="row"><strong role="rowheader">STUDY TIME</strong><span>${fmtStudy(todayRecordForComparison.studyMinutes)}</span><span>${fmtStudy(yesterdayRecord?.studyMinutes || 0)}</span><span>${fmtStudy(Math.round(sevenDayAverageStudy))}</span></div>
+    </div>`,
+    "<span class='chart-range'>AVERAGE INCLUDES ZERO-ACTIVITY DAYS</span>",
+    "comparison-panel"
+  );
   const lastSeven = Array.from({ length: 7 }, (_, index) => {
     const date = addDays(today, index - 6);
     const day = state.history[date];
@@ -553,7 +676,7 @@ function renderProgress() {
   const sevenChart = renderLineChart(lastSeven);
   const monthlyChart = renderBarChart(monthWeeks, { valueKey: "value", maxValue: 7, empty: "NO MONTHLY ACTIVITY" });
   const bestDay = studyDates[0];
-  host.innerHTML = `<div class="screen-view screen-enter"><div class="screen-intro"><div><span class="section-code">PROGRESS CORE // VERIFIED HISTORY</span><p>EVERY NUMBER BELOW COMES FROM YOUR SAVED DAILY RECORDS.</p></div><span class="data-integrity"><i></i> REAL PLAYER DATA</span></div><div class="metric-grid">${cards}</div><div class="progress-grid">${panel("ACTIVITY TRACE // 07 DAYS", "WEEKLY XP ACTIVITY", `${sevenChart}<div class="chart-legend"><span><i></i> XP EARNED / PENALTY</span><span>LOCAL DAY</span></div>`, "<span class='chart-range'>LAST 7 DAYS</span>", "chart-panel weekly-chart")}${panel("MONTH ACTIVITY // CURRENT", "MONTHLY ACTIVE DAYS", `${monthlyChart}<div class="chart-legend"><span><i></i> ACTIVE DAYS / WEEK</span><span>${escapeHTML(monthKey)}</span></div>`, `<span class="chart-range">${fmtMonth(new Date()).toUpperCase()}</span>`, "chart-panel monthly-chart")}</div><div class="progress-detail-grid">${panel("PERSONAL RECORD // STUDY", "BEST STUDY DAY", bestDay ? `<div class="record-display"><span class="record-glyph">◷</span><div><strong>${fmtStudy(bestDay.studyMinutes)}</strong><span>${fmtDate(bestDay.date, { weekday: "long", month: "long", day: "numeric" }).toUpperCase()}</span></div></div>` : `<div class="empty-state compact"><span class="empty-glyph">◷</span><p>NO STUDY RECORD YET.<br>YOUR FIRST SESSION STARTS THE ARCHIVE.</p></div>`, "<span class='section-extra'>ALL TIME</span>", "record-panel")}${panel("ACTIVITY ARCHIVE // STREAK", "STREAK STATUS", `<div class="streak-display"><div><span>CURRENT</span><strong>${stats.currentStreak}<small> DAYS</small></strong></div><div><span>BEST EVER</span><strong>${stats.bestStreak}<small> DAYS</small></strong></div></div><p class="subtle-copy">A day is complete after all four daily quests and at least one legitimate study minute are recorded.</p>`, "<span class='section-extra'>5 CORE OBJECTIVES</span>", "streak-panel")}</div></div>`;
+  host.innerHTML = `<div class="screen-view screen-enter"><div class="screen-intro"><div><span class="section-code">PROGRESS CORE // VERIFIED HISTORY</span><p>EVERY NUMBER BELOW COMES FROM YOUR SAVED DAILY RECORDS.</p></div><span class="data-integrity"><i></i> REAL PLAYER DATA</span></div><div class="metric-grid">${cards}</div>${comparisonPanel}<div class="progress-grid">${panel("ACTIVITY TRACE // 07 DAYS", "WEEKLY XP ACTIVITY", `${sevenChart}<div class="chart-legend"><span><i></i> XP EARNED / PENALTY</span><span>LOCAL DAY</span></div>`, "<span class='chart-range'>LAST 7 DAYS</span>", "chart-panel weekly-chart")}${panel("MONTH ACTIVITY // CURRENT", "MONTHLY ACTIVE DAYS", `${monthlyChart}<div class="chart-legend"><span><i></i> ACTIVE DAYS / WEEK</span><span>${escapeHTML(monthKey)}</span></div>`, `<span class="chart-range">${fmtMonth(new Date()).toUpperCase()}</span>`, "chart-panel monthly-chart")}</div><div class="progress-detail-grid">${panel("PERSONAL RECORD // STUDY", "BEST STUDY DAY", bestDay ? `<div class="record-display"><span class="record-glyph">◷</span><div><strong>${fmtStudy(bestDay.studyMinutes)}</strong><span>${fmtDate(bestDay.date, { weekday: "long", month: "long", day: "numeric" }).toUpperCase()}</span></div></div>` : `<div class="empty-state compact"><span class="empty-glyph">◷</span><p>NO STUDY RECORD YET.<br>YOUR FIRST SESSION STARTS THE ARCHIVE.</p></div>`, "<span class='section-extra'>ALL TIME</span>", "record-panel")}${panel("ACTIVITY ARCHIVE // STREAK", "STREAK STATUS", `<div class="streak-display"><div><span>CURRENT</span><strong>${stats.currentStreak}<small> DAYS</small></strong></div><div><span>BEST EVER</span><strong>${stats.bestStreak}<small> DAYS</small></strong></div></div><p class="subtle-copy">A day is complete after all four daily quests and at least one legitimate study minute are recorded.</p>`, "<span class='section-extra'>5 CORE OBJECTIVES</span>", "streak-panel")}</div></div>`;
 }
 
 function renderAchievements() {
@@ -726,6 +849,10 @@ function changeCalendarMonth(amount) {
 }
 
 function handleClick(event) {
+  if (event.target.matches(".rank-awakening-backdrop")) {
+    dismissRankAscension();
+    return;
+  }
   const screenButton = event.target.closest("[data-screen]");
   if (screenButton) {
     navigate(screenButton.dataset.screen);
@@ -734,8 +861,10 @@ function handleClick(event) {
   const action = event.target.closest("[data-action]");
   if (!action || action.disabled) return;
   switch (action.dataset.action) {
+    case "dismiss-rank": dismissRankAscension(); break;
     case "complete-quest": recordQuest(action.dataset.id); break;
     case "complete-custom": completeCustomQuest(action.dataset.id); break;
+    case "focus-mode": setFocusMode(action.dataset.mode); break;
     case "focus-duration": resetFocusSprint(Number(action.dataset.minutes)); break;
     case "focus-toggle": toggleFocusSprint(); break;
     case "focus-reset": resetFocusSprint(); break;
@@ -777,6 +906,10 @@ function handleSubmit(event) {
     event.preventDefault();
     submitStudy(form);
   }
+  if (form.id === "focusDurationForm") {
+    event.preventDefault();
+    applyFocusDuration(form);
+  }
   if (form.id === "customQuestForm") {
     event.preventDefault();
     addCustomQuest(form);
@@ -816,7 +949,10 @@ document.addEventListener("submit", handleSubmit);
 menuToggle.addEventListener("click", () => sidebar.classList.contains("is-open") ? closeMobileNav() : openMobileNav());
 navBackdrop.addEventListener("click", closeMobileNav);
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape") closeMobileNav();
+  if (event.key === "Escape") {
+    dismissRankAscension();
+    closeMobileNav();
+  }
 });
 document.addEventListener("change", event => {
   if (event.target.id === "importSaveInput") importPlayerSave(event.target.files?.[0]);

@@ -4,9 +4,11 @@ import {
   ACHIEVEMENTS,
   CORE_QUESTS,
   SAVE_VERSION,
+  STUDY_CAP_MINUTES,
   TIMED_EVENTS,
   addDays,
   applyXp,
+  applyXpWithLevelRewards,
   createSave,
   customStudyXp,
   dayStatus,
@@ -15,6 +17,7 @@ import {
   getCurrentStreak,
   getStats,
   isDayComplete,
+  levelUpReward,
   localDate,
   migrateLegacySave,
   normalizeSave,
@@ -49,11 +52,49 @@ test("level thresholds and rank bands match the system specification", () => {
   assert.deepEqual([1, 5, 10, 20, 40, 75, 150, 300, 999].map(rankForLevel), ["E", "D", "C", "B", "A", "S", "SS", "SSS", "X"]);
 });
 
+test("level-up rewards start at 100 XP and compound by 5 percent per level", () => {
+  assert.deepEqual([1, 2, 3].map(levelUpReward), [100, 105, 110]);
+
+  const save = createSave();
+  const secondLevel = applyXpWithLevelRewards(save, 500);
+  assert.equal(secondLevel.levelRewardXp, 100);
+  assert.equal(save.player.totalXp, 600);
+  assert.equal(save.player.level, 2);
+
+  const thirdLevel = applyXpWithLevelRewards(save, 650);
+  assert.equal(thirdLevel.levelRewardXp, 105);
+  assert.equal(save.player.totalXp, 1355);
+  assert.equal(save.player.level, 3);
+});
+
 test("study XP is proportional to cumulative daily time, including tiny sessions", () => {
   assert.equal(customStudyXp(0, 30), 25);
   assert.equal(customStudyXp(30, 31), 0);
   assert.equal(customStudyXp(31, 60), 25);
   assert.equal(customStudyXp(0, 480), 400);
+  assert.equal(customStudyXp(0, 720), 600);
+});
+
+test("the daily study cap is 12 hours and normalized saves retain the full valid range", () => {
+  assert.equal(STUDY_CAP_MINUTES, 720);
+  const save = createSave("2026-10-06");
+  save.history["2026-10-06"].studyMinutes = STUDY_CAP_MINUTES;
+  save.history["2026-10-06"].studyEntries.push({ minutes: STUDY_CAP_MINUTES, xp: 600, at: "" });
+  const normalized = normalizeSave(save, "2026-10-06");
+  assert.equal(normalized.antiCheat.studyCapMinutes, STUDY_CAP_MINUTES);
+  assert.equal(normalized.history["2026-10-06"].studyMinutes, STUDY_CAP_MINUTES);
+  assert.equal(normalized.history["2026-10-06"].studyEntries[0].minutes, STUDY_CAP_MINUTES);
+});
+
+test("extended study achievements unlock at their stated lifetime milestones", () => {
+  const save = createSave("2026-10-06");
+  const day = save.history["2026-10-06"];
+  day.studyMinutes = 14999;
+  assert.equal(ACHIEVEMENTS.find(item => item.id === "two-hundred-fifty-hours-study").test(save), false);
+  day.studyMinutes = 15000;
+  assert.equal(ACHIEVEMENTS.find(item => item.id === "two-hundred-fifty-hours-study").test(save), true);
+  day.studyMinutes = 30000;
+  assert.equal(ACHIEVEMENTS.find(item => item.id === "five-hundred-hours-study").test(save), true);
 });
 
 test("XP penalties update level progress and preserve the signed lifetime total", () => {
