@@ -1,0 +1,11 @@
+{
+  "name": "arise-system-v10",
+  "private": true,
+  "version": "10.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/serve.mjs",
+    "dev:lan": "node scripts/serve.mjs --lan",
+    "test": "node --test --test-isolation=none"
+  }
+}

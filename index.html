@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#050a12">
+    <meta name="description" content="ARISE SYSTEM — personal progress interface">
+    <title>ARISE SYSTEM V10</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <div id="bootScreen" class="boot-screen" aria-label="ARISE SYSTEM boot sequence">
+      <div class="boot-grid"></div>
+      <div class="boot-core">
+        <div class="boot-ring ring-outer"></div>
+        <div class="boot-ring ring-middle"></div>
+        <div class="boot-ring ring-inner"></div>
+        <div class="boot-mark">A</div>
+        <div class="boot-wordmark">ARISE</div>
+        <div class="boot-subtitle">PLAYER SYSTEM INITIALIZATION</div>
+        <div class="boot-readout"><span class="boot-caret">&gt;</span><span id="bootText">SCANNING PLAYER...</span></div>
+        <div class="boot-track"><i id="bootProgress"></i></div>
+      </div>
+      <div class="boot-footer"><span>ARISE CORE // V10.0</span><span>LOCAL PLAYER INSTANCE</span></div>
+    </div>
+
+    <div id="appShell" class="app-shell" hidden>
+      <button id="navBackdrop" class="nav-backdrop" type="button" aria-label="Close navigation" hidden></button>
+      <aside id="sidebar" class="sidebar" aria-label="ARISE navigation">
+        <div class="brand-lockup">
+          <div class="brand-glyph">A</div>
+          <div><div class="brand-name">ARISE<span> //</span></div><div class="brand-sub">PLAYER SYSTEM V10</div></div>
+        </div>
+        <div class="nav-caption">PLAYER INTERFACE <span>08 MODULES</span></div>
+        <nav id="primaryNav" class="primary-nav" aria-label="Main navigation">
+          <button class="nav-item active" type="button" data-screen="home"><span class="nav-icon">⌂</span><span>HOME</span><span class="nav-index">01</span></button>
+          <button class="nav-item" type="button" data-screen="quests"><span class="nav-icon">◈</span><span>QUESTS</span><span class="nav-index">02</span></button>
+          <button class="nav-item" type="button" data-screen="progress"><span class="nav-icon">⌁</span><span>PROGRESS</span><span class="nav-index">03</span></button>
+          <button class="nav-item" type="button" data-screen="achievements"><span class="nav-icon">✧</span><span>ACHIEVEMENTS</span><span class="nav-index">04</span></button>
+          <button class="nav-item" type="button" data-screen="player"><span class="nav-icon">◎</span><span>PLAYER</span><span class="nav-index">05</span></button>
+          <button class="nav-item" type="button" data-screen="calendar"><span class="nav-icon">▦</span><span>CALENDAR</span><span class="nav-index">06</span></button>
+          <button class="nav-item" type="button" data-screen="system"><span class="nav-icon">⚙</span><span>SYSTEM</span><span class="nav-index">07</span></button>
+          <button class="nav-item" type="button" data-screen="events"><span class="nav-icon">✺</span><span>EVENTS</span><span class="nav-index">08</span></button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="sidebar-player">
+            <div class="sidebar-avatar">A</div>
+            <div class="sidebar-player-copy"><span>PLAYER IDENTIFIED</span><strong>AWAKENED</strong></div>
+            <i class="online-indicator"></i>
+          </div>
+          <div class="sidebar-foot"><span>ARISE CORE</span><span>ONLINE <i></i></span></div>
+        </div>
+      </aside>
+
+      <div class="app-main">
+        <header class="topbar">
+          <button id="menuToggle" class="menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false"><span></span><span></span><span></span></button>
+          <div class="topbar-heading"><div class="eyebrow"><span class="live-dot"></span> SYSTEM STATUS: ONLINE <i>///</i> PLAYER IDENTIFIED</div><h1 id="screenTitle">HOME <span>COMMAND CENTER</span></h1></div>
+          <div class="topbar-meta"><div><span>LOCAL DATE</span><strong id="topDate">—</strong></div><div class="topbar-rank"><span>RANK</span><strong id="topRank">E</strong></div></div>
+        </header>
+        <main id="screenHost" class="screen-host" tabindex="-1" aria-live="polite"></main>
+        <footer class="app-footer"><span>ARISE CORE // V10.0</span><span>DISCIPLINE <i>•</i> PROGRESS <i>•</i> ASCENSION</span><span>LOCAL PLAYER INSTANCE</span></footer>
+      </div>
+    </div>
+
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+    <div id="modalRoot"></div>
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>
